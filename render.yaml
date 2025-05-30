@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: neichnice-whatsapp-bot
+    env: node
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: ALWAYS_ONLINE
+        value: "true"
+      - key: AUTO_READ
+        value: "true"
+      - key: AUTO_REACT
+        value: "true"
+      - key: BOT_NAME
+        value: "NEICHNICE"
+      - key: WHATSAPP_NUMBER
+        value: "+263733517788"
+      - key: GOOGLE_API_KEY
+        value: "AIzaSyB40-cHT-AoJGsglf0cCMQXJYoeX2IGUhk"
+      - key: GOOGLE_SEARCH_ENGINE_ID
+        value: "07a153562c00a416d"
+    healthCheckPath: /health
+    autoDeploy: true 
