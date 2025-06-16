@@ -23,7 +23,10 @@ let isTestingMode = true;
 
 // Initialize WhatsApp client with additional configurations
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    clientId: 'whatsapp-bot',
+    dataPath: path.join(__dirname, '.wwebjs_auth'),
+  }),
   puppeteer: {
     headless: true,
     executablePath: process.env.CHROME_BIN || null,
@@ -63,16 +66,6 @@ const client = new Client({
       '--no-sandbox',
       '--disable-gpu',
       '--disable-software-rasterizer',
-      '--disable-dev-shm-usage',
-      '--disable-setuid-sandbox',
-      '--no-sandbox',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--disable-dev-shm-usage',
-      '--disable-setuid-sandbox',
-      '--no-sandbox',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
     ],
     defaultViewport: {
       width: 1280,
@@ -81,10 +74,12 @@ const client = new Client({
     ignoreHTTPSErrors: true,
     timeout: 60000,
   },
-  qrMaxRetries: 5,
+  qrMaxRetries: 10,
   restartOnAuthFail: true,
   takeoverOnConflict: true,
-  takeoverTimeoutMs: 10000,
+  takeoverTimeoutMs: 20000,
+  userAgent:
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 });
 
 // Store for handling message queues
@@ -545,89 +540,51 @@ client.on('message', async (message) => {
   }
 });
 
-// Connection event handlers
-client.on('qr', (qr) => {
-  console.log('QR RECEIVED', qr);
-  qrcode.generate(qr, { small: true });
-});
-
-client.on('authenticated', () => {
-  console.log('Client is authenticated!');
-  processMessageQueue();
-});
-
-client.on('auth_failure', (msg) => {
-  console.error('AUTHENTICATION FAILED:', msg);
-});
-
-client.on('ready', () => {
-  console.log(`${BOT_NAME} is ready and listening for messages!`);
-  setOnlinePresence();
-  processMessageQueue();
-});
-
-client.on('disconnected', async (reason) => {
-  console.log('Client was disconnected:', reason);
-  await reconnectClient();
-});
-
-// Reconnection handler
-client.on('disconnected', async (reason) => {
-  console.log('Disconnected:', reason);
-  await reconnectClient();
-});
-
-// Keep bot always online with retry mechanism
-async function setOnlinePresence() {
-  try {
-    if (client.pupPage && !client.pupPage.isClosed()) {
-      await client.sendPresenceAvailable();
-      console.log('Set presence to available');
-    } else {
-      console.log('Browser page is closed, attempting to reconnect...');
-      await reconnectClient();
-    }
-    setTimeout(setOnlinePresence, 600000); // Refresh every 10 minutes
-  } catch (error) {
-    console.error('Error setting presence:', error);
-    // Attempt to reconnect if there's an error
-    await reconnectClient();
-    setTimeout(setOnlinePresence, 60000); // Retry after 1 minute
-  }
-}
-
 // Enhanced reconnection function
 async function reconnectClient() {
   try {
     console.log('Attempting to reconnect...');
+
+    // Close existing page if it exists
     if (client.pupPage && !client.pupPage.isClosed()) {
-      await client.pupPage.close();
+      try {
+        await client.pupPage.close();
+      } catch (error) {
+        console.error('Error closing existing page:', error);
+      }
     }
 
-    // Clear any existing sessions
+    // Clear auth folder
     try {
       const authFolder = path.join(__dirname, '.wwebjs_auth');
       if (fs.existsSync(authFolder)) {
         fs.rmSync(authFolder, { recursive: true, force: true });
+        console.log('Auth folder cleared successfully');
       }
     } catch (error) {
       console.error('Error clearing auth folder:', error);
     }
 
-    // Initialize with retry
+    // Initialize with retry mechanism
     let retryCount = 0;
-    const maxRetries = 3;
+    const maxRetries = 5;
+    const retryDelay = 10000; // 10 seconds
 
     while (retryCount < maxRetries) {
       try {
+        console.log(`Reconnection attempt ${retryCount + 1} of ${maxRetries}`);
         await client.initialize();
         console.log('Reconnection successful');
         return;
       } catch (error) {
         retryCount++;
         console.error(`Reconnection attempt ${retryCount} failed:`, error);
+
         if (retryCount < maxRetries) {
-          await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds before retry
+          console.log(
+            `Waiting ${retryDelay / 1000} seconds before next attempt...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
         }
       }
     }
@@ -635,54 +592,64 @@ async function reconnectClient() {
     throw new Error('Max reconnection attempts reached');
   } catch (error) {
     console.error('Reconnection failed:', error);
-    // Wait before trying again
-    setTimeout(reconnectClient, 30000); // Retry after 30 seconds
+    setTimeout(reconnectClient, 30000);
   }
 }
 
-// Add health check endpoint
-app.get('/health', (req, res) => {
-  const health = {
-    status: 'healthy',
-    botName: BOT_NAME,
-    isConnected: client.connected,
-    isTestingMode: isTestingMode,
-    timestamp: new Date().toISOString(),
-    memory: process.memoryUsage(),
-    uptime: process.uptime(),
-  };
-  res.status(200).json(health);
-});
+// Enhanced QR code handling
+client.on('qr', (qr) => {
+  console.log('QR RECEIVED', qr);
+  qrcode.generate(qr, { small: true });
 
-// Add restart endpoint
-app.post('/restart', async (req, res) => {
+  // Store QR code in a file for debugging
   try {
-    await reconnectClient();
-    res
-      .status(200)
-      .json({ status: 'restarting', message: 'Bot is restarting...' });
+    fs.writeFileSync(path.join(__dirname, 'last_qr.txt'), qr);
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    console.error('Error saving QR code:', error);
   }
 });
 
-// Enhanced error handling
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', {
-    error: error.message,
-    stack: error.stack,
-    timestamp: new Date().toISOString(),
-  });
-  reconnectClient();
+// Enhanced authentication handling
+client.on('authenticated', () => {
+  console.log('Client is authenticated!');
+  // Clear QR code file after successful authentication
+  try {
+    const qrFile = path.join(__dirname, 'last_qr.txt');
+    if (fs.existsSync(qrFile)) {
+      fs.unlinkSync(qrFile);
+    }
+  } catch (error) {
+    console.error('Error clearing QR code file:', error);
+  }
+  processMessageQueue();
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection:', {
-    reason,
-    timestamp: new Date().toISOString(),
-  });
-  reconnectClient();
+// Enhanced disconnection handling
+client.on('disconnected', async (reason) => {
+  console.log('Client was disconnected:', reason);
+  if (reason === 'NAVIGATION') {
+    console.log('Navigation error detected, attempting to reconnect...');
+    await reconnectClient();
+  } else {
+    console.log('Other disconnection reason, waiting before reconnect...');
+    setTimeout(reconnectClient, 5000);
+  }
 });
+
+// Add connection status check
+setInterval(async () => {
+  try {
+    if (!client.pupPage || client.pupPage.isClosed()) {
+      console.log('Connection check failed: Page is closed');
+      await reconnectClient();
+    } else {
+      console.log('Connection check passed');
+    }
+  } catch (error) {
+    console.error('Connection check error:', error);
+    await reconnectClient();
+  }
+}, 300000); // Check every 5 minutes
 
 // Initialize WhatsApp client with error handling
 console.log(`Starting ${BOT_NAME} initialization...`);
