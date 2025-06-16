@@ -12,18 +12,21 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Bot Configuration
-const BOT_NAME = process.env.BOT_NAME || 'NASHY';
-const WHATSAPP_NUMBER = process.env.WHATSAPP_NUMBER || '+263733517788';
-const GOOGLE_API_KEY =
-  process.env.GOOGLE_API_KEY || 'AIzaSyB40-cHT-AoJGsglf0cCMQXJYoeX2IGUhk';
-const GOOGLE_SEARCH_ENGINE_ID =
-  process.env.GOOGLE_SEARCH_ENGINE_ID || '07a153562c00a416d';
+const BOT_NAME = 'NASHY';
+const WHATSAPP_NUMBER = '+263733517788';
+const GOOGLE_API_KEY = 'AIzaSyB40-cHT-AoJGsglf0cCMQXJYoeX2IGUhk';
+const GOOGLE_SEARCH_ENGINE_ID = '07a153562c00a416d';
+const ADMIN_NUMBER = '+263733517788'; // Your WhatsApp number for testing
+
+// Add testing mode state
+let isTestingMode = true;
 
 // Initialize WhatsApp client with additional configurations
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
+    executablePath: process.env.CHROME_BIN || null,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -32,9 +35,51 @@ const client = new Client({
       '--no-first-run',
       '--no-zygote',
       '--disable-gpu',
+      '--disable-extensions',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--hide-scrollbars',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-default-browser-check',
+      '--disable-notifications',
+      '--disable-popup-blocking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--enable-features=NetworkService,NetworkServiceInProcess',
+      '--force-color-profile=srgb',
+      '--memory-pressure-off',
+      '--js-flags=--max-old-space-size=512',
+      '--single-process',
+      '--no-zygote',
+      '--disable-dev-shm-usage',
+      '--disable-setuid-sandbox',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-dev-shm-usage',
+      '--disable-setuid-sandbox',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-dev-shm-usage',
+      '--disable-setuid-sandbox',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
     ],
-    defaultViewport: null,
+    defaultViewport: {
+      width: 1280,
+      height: 720,
+    },
     ignoreHTTPSErrors: true,
+    timeout: 60000,
   },
   qrMaxRetries: 5,
   restartOnAuthFail: true,
@@ -48,8 +93,13 @@ let isProcessingQueue = false;
 
 // Create media directory if it doesn't exist
 const mediaDir = path.join(__dirname, 'media');
-if (!fs.existsSync(mediaDir)) {
-  fs.mkdirSync(mediaDir);
+try {
+  if (!fs.existsSync(mediaDir)) {
+    fs.mkdirSync(mediaDir, { recursive: true });
+    console.log('Media directory created successfully at:', mediaDir);
+  }
+} catch (error) {
+  console.error('Error creating media directory:', error);
 }
 
 // Function to search Google and get a response
@@ -109,9 +159,37 @@ async function handleMessage(message) {
 
     const content = message.body.toLowerCase();
     const chat = await message.getChat();
+    const contact = await message.getContact();
 
     // Mark message as read
     await chat.sendSeen();
+
+    // Handle testing mode commands
+    if (contact.number === ADMIN_NUMBER) {
+      if (content === '!test on') {
+        isTestingMode = true;
+        await message.reply(
+          '🟢 Testing mode enabled! The bot will now respond to your messages in your own chat.'
+        );
+        return;
+      } else if (content === '!test off') {
+        isTestingMode = false;
+        await message.reply('🔴 Testing mode disabled!');
+        return;
+      } else if (content === '!test status') {
+        await message.reply(
+          `Testing mode is currently ${
+            isTestingMode ? 'enabled 🟢' : 'disabled 🔴'
+          }`
+        );
+        return;
+      }
+    }
+
+    // Skip processing if not in testing mode and message is from self
+    if (!isTestingMode && contact.number === ADMIN_NUMBER) {
+      return;
+    }
 
     // Auto-react to status messages
     if (message.from === 'status@broadcast') {
@@ -140,17 +218,17 @@ async function handleMessage(message) {
     switch (content) {
       case 'hello':
       case 'hi':
+      case 'hey':
       case 'wassup':
       case 'wadii':
       case 'ndeip':
-      case 'hey':
         await message.reply(
           `Hello! I'm ${BOT_NAME}, your AI assistant. How can I help you today?`
         );
         break;
 
       case 'help':
-        await message.reply(`*${BOT_NAME} Commands*\n
+        const helpMessage = `*${BOT_NAME} Commands*\n
 🤖 Basic Commands:
 - hello: Get a greeting
 - help: Show this help message
@@ -175,7 +253,13 @@ async function handleMessage(message) {
 - Auto-reply when offline
 - View once media saving
 - Always online status
-- Auto message reactions`);
+- Auto message reactions
+
+🔧 Admin Commands:
+- !test on: Enable testing mode
+- !test off: Disable testing mode
+- !test status: Check testing mode status`;
+        await message.reply(helpMessage);
         break;
 
       case 'about':
@@ -193,7 +277,6 @@ async function handleMessage(message) {
         break;
 
       case 'info':
-        const contact = await message.getContact();
         await message.reply(`
 *Contact Info*
 Name: ${contact.name || 'N/A'}
@@ -206,7 +289,6 @@ Is Enterprise: ${contact.isEnterprise}
 
       case 'download':
         try {
-          const contact = await message.getContact();
           const profilePic = await contact.getProfilePicUrl();
           if (profilePic) {
             const media = await MessageMedia.fromUrl(profilePic);
@@ -400,8 +482,19 @@ Admin: ${chat.participants.find((p) => p.isAdmin)?.id.user || 'N/A'}
 client.on('message', async (message) => {
   // Handle view once media
   if (message.hasMedia && message.isViewOnce) {
+    console.log('View once media detected:', {
+      type: message.type,
+      from: message.from,
+      timestamp: new Date().toISOString(),
+    });
+
     try {
       const media = await message.downloadMedia();
+      console.log('Media downloaded successfully:', {
+        mimetype: media.mimetype,
+        size: media.data.length,
+      });
+
       if (media) {
         // Save the media with timestamp
         const timestamp = moment().format('YYYY-MM-DD_HH-mm-ss');
@@ -412,16 +505,34 @@ client.on('message', async (message) => {
 
         // Convert base64 to buffer and save file
         const buffer = Buffer.from(media.data, 'base64');
+
+        // Ensure directory exists before writing
+        if (!fs.existsSync(mediaDir)) {
+          fs.mkdirSync(mediaDir, { recursive: true });
+        }
+
         fs.writeFileSync(filepath, buffer);
+        console.log('View once media saved successfully:', {
+          filename,
+          filepath,
+          size: buffer.length,
+        });
 
         // Send confirmation to user
         await message.reply(`I've saved your view once media as ${filename}`);
-        console.log('View once media saved:', filepath);
+      } else {
+        console.error('Media download returned null or undefined');
+        await message.reply("Sorry, I couldn't download the media.");
       }
     } catch (error) {
-      console.error('Error saving view once media:', error);
+      console.error('Error saving view once media:', {
+        error: error.message,
+        stack: error.stack,
+        from: message.from,
+        timestamp: new Date().toISOString(),
+      });
       await message.reply(
-        'Sorry, I encountered an error saving your view once media.'
+        'Sorry, I encountered an error saving your view once media. Please try again.'
       );
     }
   }
@@ -455,50 +566,134 @@ client.on('ready', () => {
   processMessageQueue();
 });
 
-client.on('disconnected', (reason) => {
+client.on('disconnected', async (reason) => {
   console.log('Client was disconnected:', reason);
+  await reconnectClient();
 });
 
 // Reconnection handler
 client.on('disconnected', async (reason) => {
   console.log('Disconnected:', reason);
-  try {
-    await client.initialize();
-  } catch (error) {
-    console.error('Failed to reconnect:', error);
-  }
+  await reconnectClient();
 });
 
-// Keep bot always online
+// Keep bot always online with retry mechanism
 async function setOnlinePresence() {
   try {
-    await client.sendPresenceAvailable();
-    console.log('Set presence to available');
+    if (client.pupPage && !client.pupPage.isClosed()) {
+      await client.sendPresenceAvailable();
+      console.log('Set presence to available');
+    } else {
+      console.log('Browser page is closed, attempting to reconnect...');
+      await reconnectClient();
+    }
     setTimeout(setOnlinePresence, 600000); // Refresh every 10 minutes
   } catch (error) {
     console.error('Error setting presence:', error);
+    // Attempt to reconnect if there's an error
+    await reconnectClient();
+    setTimeout(setOnlinePresence, 60000); // Retry after 1 minute
   }
 }
 
-// Initialize WhatsApp client
+// Enhanced reconnection function
+async function reconnectClient() {
+  try {
+    console.log('Attempting to reconnect...');
+    if (client.pupPage && !client.pupPage.isClosed()) {
+      await client.pupPage.close();
+    }
+
+    // Clear any existing sessions
+    try {
+      const authFolder = path.join(__dirname, '.wwebjs_auth');
+      if (fs.existsSync(authFolder)) {
+        fs.rmSync(authFolder, { recursive: true, force: true });
+      }
+    } catch (error) {
+      console.error('Error clearing auth folder:', error);
+    }
+
+    // Initialize with retry
+    let retryCount = 0;
+    const maxRetries = 3;
+
+    while (retryCount < maxRetries) {
+      try {
+        await client.initialize();
+        console.log('Reconnection successful');
+        return;
+      } catch (error) {
+        retryCount++;
+        console.error(`Reconnection attempt ${retryCount} failed:`, error);
+        if (retryCount < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds before retry
+        }
+      }
+    }
+
+    throw new Error('Max reconnection attempts reached');
+  } catch (error) {
+    console.error('Reconnection failed:', error);
+    // Wait before trying again
+    setTimeout(reconnectClient, 30000); // Retry after 30 seconds
+  }
+}
+
+// Add health check endpoint
+app.get('/health', (req, res) => {
+  const health = {
+    status: 'healthy',
+    botName: BOT_NAME,
+    isConnected: client.connected,
+    isTestingMode: isTestingMode,
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    uptime: process.uptime(),
+  };
+  res.status(200).json(health);
+});
+
+// Add restart endpoint
+app.post('/restart', async (req, res) => {
+  try {
+    await reconnectClient();
+    res
+      .status(200)
+      .json({ status: 'restarting', message: 'Bot is restarting...' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Enhanced error handling
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack,
+    timestamp: new Date().toISOString(),
+  });
+  reconnectClient();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', {
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+  reconnectClient();
+});
+
+// Initialize WhatsApp client with error handling
 console.log(`Starting ${BOT_NAME} initialization...`);
-client.initialize().catch((err) => {
+client.initialize().catch(async (err) => {
   console.error('Failed to initialize client:', err);
+  await reconnectClient();
 });
 
 // Express routes
 app.get('/', (req, res) => {
   res.send(`${BOT_NAME} WhatsApp Bot Server is running!`);
-});
-
-// Health check endpoint for Render
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'healthy',
-    botName: BOT_NAME,
-    isConnected: client.connected,
-    timestamp: new Date().toISOString(),
-  });
 });
 
 // Start server with random port if 3000 is in use
