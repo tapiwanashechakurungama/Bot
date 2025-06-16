@@ -12,17 +12,19 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Bot Configuration
-const BOT_NAME = 'NASHY';
-const WHATSAPP_NUMBER = '+263733517788';
-const GOOGLE_API_KEY = 'AIzaSyB40-cHT-AoJGsglf0cCMQXJYoeX2IGUhk';
-const GOOGLE_SEARCH_ENGINE_ID = '07a153562c00a416d';
-const ADMIN_NUMBER = '+263733517788'; // Your WhatsApp number for testing
+const BOT_NAME = process.env.BOT_NAME || 'NASHY';
+const WHATSAPP_NUMBER = process.env.WHATSAPP_NUMBER || '+263733517788';
+const GOOGLE_API_KEY =
+  process.env.GOOGLE_API_KEY || 'AIzaSyB40-cHT-AoJGsglf0cCMQXJYoeX2IGUhk';
+const GOOGLE_SEARCH_ENGINE_ID =
+  process.env.GOOGLE_SEARCH_ENGINE_ID || '07a153562c00a416d';
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER || WHATSAPP_NUMBER; // Your WhatsApp number for testing
 
 // Add testing mode state
-let isTestingMode = true;
+let isTestingMode = false;
 
-// Initialize WhatsApp client with additional configurations
-const client = new Client({
+// Define the client options function
+const getClientOptions = () => ({
   authStrategy: new LocalAuth({
     clientId: 'whatsapp-bot',
     dataPath: path.join(__dirname, '.wwebjs_auth'),
@@ -60,27 +62,26 @@ const client = new Client({
       '--memory-pressure-off',
       '--js-flags=--max-old-space-size=512',
       '--single-process',
-      '--no-zygote',
-      '--disable-dev-shm-usage',
-      '--disable-setuid-sandbox',
-      '--no-sandbox',
-      '--disable-gpu',
       '--disable-software-rasterizer',
+      '--disable-web-security', // Added for potential cross-origin issues
     ],
     defaultViewport: {
       width: 1280,
       height: 720,
     },
     ignoreHTTPSErrors: true,
-    timeout: 60000,
+    timeout: 120000, // Increased timeout
   },
   qrMaxRetries: 10,
   restartOnAuthFail: true,
   takeoverOnConflict: true,
-  takeoverTimeoutMs: 20000,
+  takeoverTimeoutMs: 30000, // Increased timeout
   userAgent:
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 });
+
+// Initialize the first client instance
+let activeClient = new Client(getClientOptions());
 
 // Store for handling message queues
 let messageQueue = [];
@@ -201,7 +202,7 @@ async function handleMessage(message) {
     }
 
     // Auto-reply for offline status
-    if (!(await client.getState()) === 'CONNECTED') {
+    if (!(await activeClient.getState()) === 'CONNECTED') {
       await message.reply(
         "I'm currently offline, but I'll process your message and respond shortly."
       );
@@ -453,7 +454,7 @@ Admin: ${chat.participants.find((p) => p.isAdmin)?.id.user || 'N/A'}
     // Auto-react to messages
     if (process.env.AUTO_REACT === 'true') {
       try {
-        const reactions = ['👍', '❤️', '😊', '👏', '🎉', '✨', '🌟'];
+        const reactions = ['👍', '❤️', '��', '👏', '🎉', '✨', '🌟'];
         const randomReaction =
           reactions[Math.floor(Math.random() * reactions.length)];
         await message.react(randomReaction);
@@ -473,72 +474,29 @@ Admin: ${chat.participants.find((p) => p.isAdmin)?.id.user || 'N/A'}
   }
 }
 
-// Message event listener
-client.on('message', async (message) => {
-  // Handle view once media
-  if (message.hasMedia && message.isViewOnce) {
-    console.log('View once media detected:', {
-      type: message.type,
-      from: message.from,
-      timestamp: new Date().toISOString(),
-    });
-
-    try {
-      const media = await message.downloadMedia();
-      console.log('Media downloaded successfully:', {
-        mimetype: media.mimetype,
-        size: media.data.length,
-      });
-
-      if (media) {
-        // Save the media with timestamp
-        const timestamp = moment().format('YYYY-MM-DD_HH-mm-ss');
-        const filename = `view_once_${timestamp}.${
-          media.mimetype.split('/')[1]
-        }`;
-        const filepath = path.join(mediaDir, filename);
-
-        // Convert base64 to buffer and save file
-        const buffer = Buffer.from(media.data, 'base64');
-
-        // Ensure directory exists before writing
-        if (!fs.existsSync(mediaDir)) {
-          fs.mkdirSync(mediaDir, { recursive: true });
-        }
-
-        fs.writeFileSync(filepath, buffer);
-        console.log('View once media saved successfully:', {
-          filename,
-          filepath,
-          size: buffer.length,
-        });
-
-        // Send confirmation to user
-        await message.reply(`I've saved your view once media as ${filename}`);
-      } else {
-        console.error('Media download returned null or undefined');
-        await message.reply("Sorry, I couldn't download the media.");
-      }
-    } catch (error) {
-      console.error('Error saving view once media:', {
-        error: error.message,
-        stack: error.stack,
-        from: message.from,
-        timestamp: new Date().toISOString(),
-      });
-      await message.reply(
-        'Sorry, I encountered an error saving your view once media. Please try again.'
+// Keep bot always online with retry mechanism
+async function setOnlinePresence() {
+  try {
+    if (
+      activeClient.pupPage &&
+      !activeClient.pupPage.isClosed() &&
+      activeClient.connected
+    ) {
+      await activeClient.sendPresenceAvailable();
+      console.log('Set presence to available');
+    } else {
+      console.log(
+        'Browser page is closed or not connected, attempting to reconnect...'
       );
+      await reconnectClient();
     }
+    setTimeout(setOnlinePresence, 600000); // Refresh every 10 minutes
+  } catch (error) {
+    console.error('Error setting presence:', error);
+    await reconnectClient();
+    setTimeout(setOnlinePresence, 60000); // Retry after 1 minute
   }
-
-  if (!client.pupPage || !client.connected) {
-    messageQueue.push(message);
-    processMessageQueue();
-  } else {
-    await handleMessage(message);
-  }
-});
+}
 
 // Enhanced reconnection function
 async function reconnectClient() {
@@ -546,34 +504,34 @@ async function reconnectClient() {
     console.log('Attempting to reconnect...');
 
     // Close existing page if it exists
-    if (client.pupPage && !client.pupPage.isClosed()) {
+    if (activeClient.pupPage && !activeClient.pupPage.isClosed()) {
       try {
-        await client.pupPage.close();
+        await activeClient.pupPage.close();
       } catch (error) {
         console.error('Error closing existing page:', error);
       }
     }
 
-    // Clear auth folder
-    try {
-      const authFolder = path.join(__dirname, '.wwebjs_auth');
-      if (fs.existsSync(authFolder)) {
-        fs.rmSync(authFolder, { recursive: true, force: true });
-        console.log('Auth folder cleared successfully');
-      }
-    } catch (error) {
-      console.error('Error clearing auth folder:', error);
-    }
-
-    // Initialize with retry mechanism
+    // Initialize with retry mechanism, creating a new client instance
     let retryCount = 0;
     const maxRetries = 5;
-    const retryDelay = 10000; // 10 seconds
+    const retryDelay = 15000; // 15 seconds
 
     while (retryCount < maxRetries) {
       try {
         console.log(`Reconnection attempt ${retryCount + 1} of ${maxRetries}`);
-        await client.initialize();
+
+        // Create a *new* Client instance with the defined options
+        const newClient = new Client(getClientOptions());
+        await newClient.initialize();
+
+        // Replace the global client with the new one
+        // This is crucial for event listeners and other operations to use the new instance
+        activeClient = newClient;
+
+        // Re-attach all event listeners to the new client instance
+        attachClientListeners(activeClient);
+
         console.log('Reconnection successful');
         return;
       } catch (error) {
@@ -591,56 +549,144 @@ async function reconnectClient() {
 
     throw new Error('Max reconnection attempts reached');
   } catch (error) {
-    console.error('Reconnection failed:', error);
-    setTimeout(reconnectClient, 30000);
+    console.error('Fatal reconnection failure:', error);
+    setTimeout(reconnectClient, 60000); // Wait longer for next retry
   }
 }
 
-// Enhanced QR code handling
-client.on('qr', (qr) => {
-  console.log('QR RECEIVED', qr);
-  qrcode.generate(qr, { small: true });
+// Function to attach all event listeners
+function attachClientListeners(clientInstance) {
+  clientInstance.on('qr', (qr) => {
+    console.log('QR RECEIVED', qr);
+    qrcode.generate(qr, { small: true });
+    try {
+      fs.writeFileSync(path.join(__dirname, 'last_qr.txt'), qr);
+    } catch (error) {
+      console.error('Error saving QR code:', error);
+    }
+  });
 
-  // Store QR code in a file for debugging
-  try {
-    fs.writeFileSync(path.join(__dirname, 'last_qr.txt'), qr);
-  } catch (error) {
-    console.error('Error saving QR code:', error);
-  }
-});
+  clientInstance.on('authenticated', () => {
+    console.log('Client is authenticated!');
+    try {
+      const qrFile = path.join(__dirname, 'last_qr.txt');
+      if (fs.existsSync(qrFile)) {
+        fs.unlinkSync(qrFile);
+      }
+    } catch (error) {
+      console.error('Error clearing QR code file:', error);
+    }
+    processMessageQueue();
+  });
 
-// Enhanced authentication handling
-client.on('authenticated', () => {
-  console.log('Client is authenticated!');
-  // Clear QR code file after successful authentication
+  clientInstance.on('auth_failure', (msg) => {
+    console.error('AUTHENTICATION FAILED:', msg);
+    // On auth failure, try to clear session and reconnect
+    clearAuthFolderAndReconnect();
+  });
+
+  clientInstance.on('ready', () => {
+    console.log(`${BOT_NAME} is ready and listening for messages!`);
+    setOnlinePresence();
+    processMessageQueue();
+  });
+
+  clientInstance.on('disconnected', async (reason) => {
+    console.log('Client was disconnected:', reason);
+    // Immediately try to reconnect on disconnection
+    await reconnectClient();
+  });
+
+  clientInstance.on('message', async (message) => {
+    // Handle view once media
+    if (message.hasMedia && message.isViewOnce) {
+      console.log('View once media detected:', {
+        type: message.type,
+        from: message.from,
+        timestamp: new Date().toISOString(),
+      });
+
+      try {
+        const media = await message.downloadMedia();
+        console.log('Media downloaded successfully:', {
+          mimetype: media.mimetype,
+          size: media.data.length,
+        });
+
+        if (media) {
+          const timestamp = moment().format('YYYY-MM-DD_HH-mm-ss');
+          const filename = `view_once_${timestamp}.${
+            media.mimetype.split('/')[1]
+          }`;
+          const filepath = path.join(mediaDir, filename);
+
+          const buffer = Buffer.from(media.data, 'base64');
+
+          if (!fs.existsSync(mediaDir)) {
+            fs.mkdirSync(mediaDir, { recursive: true });
+          }
+
+          fs.writeFileSync(filepath, buffer);
+          console.log('View once media saved successfully:', {
+            filename,
+            filepath,
+            size: buffer.length,
+          });
+
+          await message.reply(`I've saved your view once media as ${filename}`);
+        } else {
+          console.error('Media download returned null or undefined');
+          await message.reply("Sorry, I couldn't download the media.");
+        }
+      } catch (error) {
+        console.error('Error saving view once media:', {
+          error: error.message,
+          stack: error.stack,
+          from: message.from,
+          timestamp: new Date().toISOString(),
+        });
+        await message.reply(
+          'Sorry, I encountered an error saving your view once media. Please try again.'
+        );
+      }
+    }
+
+    if (!activeClient.pupPage || !activeClient.connected) {
+      // Use activeClient here
+      messageQueue.push(message);
+      processMessageQueue();
+    } else {
+      await handleMessage(message); // handleMessage uses message directly
+    }
+  });
+}
+
+// Function to clear auth folder and reconnect
+async function clearAuthFolderAndReconnect() {
   try {
-    const qrFile = path.join(__dirname, 'last_qr.txt');
-    if (fs.existsSync(qrFile)) {
-      fs.unlinkSync(qrFile);
+    const authFolder = path.join(__dirname, '.wwebjs_auth');
+    if (fs.existsSync(authFolder)) {
+      fs.rmSync(authFolder, { recursive: true, force: true });
+      console.log('Auth folder cleared due to authentication failure');
     }
   } catch (error) {
-    console.error('Error clearing QR code file:', error);
+    console.error('Error clearing auth folder on auth failure:', error);
   }
-  processMessageQueue();
-});
+  await reconnectClient();
+}
 
-// Enhanced disconnection handling
-client.on('disconnected', async (reason) => {
-  console.log('Client was disconnected:', reason);
-  if (reason === 'NAVIGATION') {
-    console.log('Navigation error detected, attempting to reconnect...');
-    await reconnectClient();
-  } else {
-    console.log('Other disconnection reason, waiting before reconnect...');
-    setTimeout(reconnectClient, 5000);
-  }
-});
+// Initial attachment of listeners to the first client instance
+attachClientListeners(activeClient);
 
-// Add connection status check
+// Add connection status check - use activeClient
 setInterval(async () => {
   try {
-    if (!client.pupPage || client.pupPage.isClosed()) {
-      console.log('Connection check failed: Page is closed');
+    if (
+      !activeClient.pupPage ||
+      activeClient.pupPage.isClosed() ||
+      !activeClient.connected
+    ) {
+      console.log('Connection check failed: Page is closed or not connected');
       await reconnectClient();
     } else {
       console.log('Connection check passed');
@@ -653,9 +699,9 @@ setInterval(async () => {
 
 // Initialize WhatsApp client with error handling
 console.log(`Starting ${BOT_NAME} initialization...`);
-client.initialize().catch(async (err) => {
-  console.error('Failed to initialize client:', err);
-  await reconnectClient();
+activeClient.initialize().catch(async (err) => {
+  console.error('Failed to initialize client during initial launch:', err);
+  await reconnectClient(); // Attempt reconnection if initial launch fails
 });
 
 // Express routes
