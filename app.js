@@ -183,6 +183,34 @@ async function handleMessage(message) {
         console.log('Replied to admin: Nashy status');
         return;
       }
+      // --- Session management commands ---
+      if (content === '!clear session') {
+        try {
+          await message.reply('🔄 Clearing WhatsApp session... Please wait.');
+          console.log('Admin requested session clear');
+          
+          // Close the current client
+          if (activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+            await activeClient.pupPage.close();
+          }
+          
+          // Clear the auth folder
+          if (fs.existsSync(authDir)) {
+            fs.rmSync(authDir, { recursive: true, force: true });
+            console.log('Auth folder cleared');
+          }
+          
+          await message.reply('✅ Session cleared! Restart the bot to scan QR code again.');
+          console.log('Session clear completed');
+          
+          // Exit the process to force restart
+          process.exit(0);
+        } catch (error) {
+          console.error('Error clearing session:', error);
+          await message.reply('❌ Error clearing session. Please restart the bot manually.');
+        }
+        return;
+      }
     }
     
     // --- If Nashy is not available, reply accordingly to non-admins ---
